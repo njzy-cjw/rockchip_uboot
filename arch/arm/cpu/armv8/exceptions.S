@@ -7,10 +7,10 @@
 
 #include <asm-offsets.h>
 #include <config.h>
-#include <version.h>
 #include <asm/ptrace.h>
 #include <asm/macro.h>
 #include <linux/linkage.h>
+
 
 /*
  * Enter Exception.
@@ -48,6 +48,42 @@
 	stp	x2, x0, [sp, #-16]!
 	mov	x0, sp
 .endm
+
+/*
+ * Exit Exception.
+ * This will restore the processor state that is ELR/X0~X30
+ * from the stack frame.
+ */
+.macro	exception_exit
+	ldp	x2, x0, [sp],#16
+
+	/* Could be running at EL3/EL2/EL1 */
+	switch_el x11, 3f, 2f, 1f
+3:	msr	elr_el3, x2
+	b	0f
+2:	msr	elr_el2, x2
+	b	0f
+1:	msr	elr_el1, x2
+0:
+	ldp	x1, x2, [sp],#16
+	ldp	x3, x4, [sp],#16
+	ldp	x5, x6, [sp],#16
+	ldp	x7, x8, [sp],#16
+	ldp	x9, x10, [sp],#16
+	ldp	x11, x12, [sp],#16
+	ldp	x13, x14, [sp],#16
+	ldp	x15, x16, [sp],#16
+	ldp	x17, x18, [sp],#16
+	ldp	x19, x20, [sp],#16
+	ldp	x21, x22, [sp],#16
+	ldp	x23, x24, [sp],#16
+	ldp	x25, x26, [sp],#16
+	ldp	x27, x28, [sp],#16
+	ldp	x29, x30, [sp],#16
+	eret
+.endm
+
+
 
 /*
  * Exception vectors.
@@ -103,6 +139,7 @@ _do_sync:
 _do_irq:
 	exception_entry
 	bl	do_irq
+	exception_exit
 
 _do_fiq:
 	exception_entry

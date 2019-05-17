@@ -17,6 +17,7 @@ typedef volatile unsigned char	vu_char;
 
 #include <config.h>
 #include <asm-offsets.h>
+#include <time.h>
 #include <linux/bitops.h>
 #include <linux/types.h>
 #include <linux/string.h>
@@ -85,6 +86,9 @@ typedef volatile unsigned char	vu_char;
 #include <part.h>
 #include <flash.h>
 #include <image.h>
+
+/* Bring in printf format macros if inttypes.h is included */
+#define __STDC_FORMAT_MACROS
 
 #ifdef __LP64__
 #define CONFIG_SYS_SUPPORT_64BIT_DATA
@@ -253,7 +257,19 @@ int	cpu_init(void);
 /* */
 phys_size_t initdram (int);
 int	display_options (void);
-void	print_size(unsigned long long, const char *);
+
+/**
+ * print_size() - Print a size with a suffic
+ *
+ * print sizes as "xxx KiB", "xxx.y KiB", "xxx MiB", "xxx.y MiB",
+ * xxx GiB, xxx.y GiB, etc as needed; allow for optional trailing string
+ * (like "\n")
+ *
+ * @size:	Size to print
+ * @suffix	String to print after the size
+ */
+void print_size(uint64_t size, const char *suffix);
+
 int print_buffer(ulong addr, const void *data, uint width, uint count,
 		 uint linelen);
 
@@ -277,12 +293,13 @@ int run_command_list(const char *cmd, int len, int flag);
 extern char console_buffer[];
 
 /* arch/$(ARCH)/lib/board.c */
-void	board_init_f(ulong);
-void	board_init_r  (gd_t *, ulong) __attribute__ ((noreturn));
-int	checkboard    (void);
-int	checkflash    (void);
-int	checkdram     (void);
-int	last_stage_init(void);
+void board_init_f(ulong);
+void board_init_r(gd_t *, ulong) __attribute__ ((noreturn));
+int checkboard(void);
+int show_board_info(void);
+int checkflash(void);
+int checkdram(void);
+int last_stage_init(void);
 extern ulong monitor_flash_len;
 int mac_read_from_eeprom(void);
 extern u8 __dtb_dt_begin[];	/* embedded device tree blob */
@@ -298,6 +315,24 @@ static inline int print_cpuinfo(void)
 #endif
 int update_flash_size(int flash_size);
 int arch_early_init_r(void);
+
+/**
+ * Reserve all necessary stacks
+ *
+ * This is used in generic board init sequence in common/board_f.c. Each
+ * architecture could provide this function to tailor the required stacks.
+ *
+ * On entry gd->start_addr_sp is pointing to the suggested top of the stack.
+ * The callee ensures gd->start_add_sp is 16-byte aligned, so architectures
+ * require only this can leave it untouched.
+ *
+ * On exit gd->start_addr_sp and gd->irq_sp should be set to the respective
+ * positions of the stack. The stack pointer(s) will be set to this later.
+ * gd->irq_sp is only required, if the architecture needs it.
+ *
+ * @return 0 if no error
+ */
+__weak int arch_reserve_stacks(void);
 
 /**
  * Show the DRAM size in a board-specific way
@@ -581,12 +616,6 @@ void ddr_enable_ecc(unsigned int dram_size);
 #endif
 #endif
 
-/*
- * Return the current value of a monotonically increasing microsecond timer.
- * Granularity may be larger than 1us if hardware does not support this.
- */
-ulong timer_get_us(void);
-
 /* $(CPU)/cpu.c */
 static inline int cpumask_next(int cpu, unsigned int mask)
 {
@@ -736,7 +765,6 @@ void	external_interrupt (struct pt_regs *);
 void	irq_install_handler(int, interrupt_handler_t *, void *);
 void	irq_free_handler   (int);
 void	reset_timer	   (void);
-ulong	get_timer	   (ulong base);
 
 /* Return value of monotonic microsecond timer */
 unsigned long timer_get_us(void);
@@ -773,7 +801,7 @@ void	invalidate_dcache_all(void);
 void	invalidate_icache_all(void);
 
 /* arch/$(ARCH)/lib/ticks.S */
-unsigned long long get_ticks(void);
+uint64_t get_ticks(void);
 void	wait_ticks    (unsigned long);
 
 /* arch/$(ARCH)/lib/time.c */

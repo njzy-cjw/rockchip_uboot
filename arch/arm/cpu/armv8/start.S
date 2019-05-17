@@ -7,7 +7,6 @@
 
 #include <asm-offsets.h>
 #include <config.h>
-#include <version.h>
 #include <linux/linkage.h>
 #include <asm/macro.h>
 #include <asm/armv8/mmu.h>
@@ -20,7 +19,30 @@
 
 .globl	_start
 _start:
+	nop
 	b	reset
+
+#ifdef CONFIG_ROCKCHIP
+/* For rockchip rsa key */
+.globl	RSA_KEY_TAG
+RSA_KEY_TAG:
+	.word	0x4B415352
+
+.globl	RSA_KEY_LENGTH
+RSA_KEY_LENGTH:
+	.word	0x200-0x08
+
+.globl	RSA_KEY_DATA
+RSA_KEY_DATA:
+	.space	0x200-0x08
+
+.globl	LoaderTagCheck
+LoaderTagCheck:
+	.word	0x4B415351
+
+RSA_PAD:
+	.space	20
+#endif /* CONFIG_ROCKCHIP */
 
 	.align 3
 
@@ -44,6 +66,23 @@ _bss_end_ofs:
 	.quad	__bss_end - _start
 
 reset:
+
+#ifdef CONFIG_ROCKCHIP
+	/*
+	 * check loader tag
+	 */
+	ldr	x0, =__loader_tag
+	ldr	w1, [x0]
+	ldr	x0, =LoaderTagCheck
+	ldr	w2, [x0]
+	cmp	w1, w2
+	b.eq	checkok
+
+	ret	/* return to maskrom or miniloader */
+
+checkok:
+#endif
+
 	/*
 	 * Could be EL3/EL2/EL1, Initial State:
 	 * Little Endian, MMU Disabled, i/dCache Disabled
@@ -57,6 +96,9 @@ reset:
 	msr	cptr_el3, xzr			/* Enable FP/SIMD */
 	ldr	x0, =COUNTER_FREQUENCY
 	msr	cntfrq_el0, x0			/* Initialize CNTFRQ */
+#ifdef CONFIG_ROCKCHIP
+	msr	cntvoff_el2, xzr		/* clear cntvoff_el2 for kernel */
+#endif
 	b	0f
 2:	msr	vbar_el2, x0
 	mov	x0, #0x33ff
@@ -66,6 +108,9 @@ reset:
 	mov	x0, #3 << 20
 	msr	cpacr_el1, x0			/* Enable FP/SIMD */
 0:
+
+	/* Apply ARM core specific erratas */
+	bl	apply_core_errata
 
 	/*
 	 * Cache/BPB/TLB Invalidate
@@ -77,6 +122,7 @@ reset:
 	/* Processor specific initialization */
 	bl	lowlevel_init
 
+#ifdef CONFIG_ARMV8_MULTIENTRY
 	branch_if_master x0, x1, master_cpu
 
 	/*
@@ -88,17 +134,82 @@ slave_cpu:
 	ldr	x0, [x1]
 	cbz	x0, slave_cpu
 	br	x0			/* branch to the given address */
-
-	/*
-	 * Master CPU
-	 */
 master_cpu:
+	/* On the master CPU */
+#endif /* CONFIG_ARMV8_MULTIENTRY */
+
 	bl	_main
+
+/*-----------------------------------------------------------------------*/
+
+WEAK(apply_core_errata)
+
+	mov	x29, lr			/* Save LR */
+	/* For now, we support Cortex-A57 specific errata only */
+
+	/* Check if we are running on a Cortex-A57 core */
+	branch_if_a57_core x0, apply_a57_core_errata
+0:
+	mov	lr, x29			/* Restore LR */
+	ret
+
+apply_a57_core_errata:
+
+#ifdef CONFIG_ARM_ERRATA_828024
+	mrs	x0, S3_1_c15_c2_0	/* cpuactlr_el1 */
+	/* Disable non-allocate hint of w-b-n-a memory type */
+	orr	x0, x0, #1 << 49
+	/* Disable write streaming no L1-allocate threshold */
+	orr	x0, x0, #3 << 25
+	/* Disable write streaming no-allocate threshold */
+	orr	x0, x0, #3 << 27
+	msr	S3_1_c15_c2_0, x0	/* cpuactlr_el1 */
+#endif
+
+#ifdef CONFIG_ARM_ERRATA_826974
+	mrs	x0, S3_1_c15_c2_0	/* cpuactlr_el1 */
+	/* Disable speculative load execution ahead of a DMB */
+	orr	x0, x0, #1 << 59
+	msr	S3_1_c15_c2_0, x0	/* cpuactlr_el1 */
+#endif
+
+#ifdef CONFIG_ARM_ERRATA_833069
+	mrs	x0, S3_1_c15_c2_0	/* cpuactlr_el1 */
+	/* Disable Enable Invalidates of BTB bit */
+	and	x0, x0, #0xE
+	msr	S3_1_c15_c2_0, x0	/* cpuactlr_el1 */
+#endif
+	b 0b
+ENDPROC(apply_core_errata)
 
 /*-----------------------------------------------------------------------*/
 
 WEAK(lowlevel_init)
 	mov	x29, lr			/* Save LR */
+
+#if defined(CONFIG_ROCKCHIP)
+
+	/* switch to el1 secure */
+#if defined(CONFIG_SWITCH_EL3_TO_EL1)
+	/*
+	 * Switch to EL1 from EL3
+	 */
+	mrs	x0, CurrentEL	/* check currentEL */
+	cmp	x0, 0xc
+	b.ne	el1_start	/* currentEL != EL3 */
+
+	ldr	x0, =0xd00	/* ST, bit[11] | RW, bit[10] | HCE, bit[8] */
+	msr	scr_el3, x0
+	ldr	x0, =0x3c5	/* D, bit[9] | A, bit[8] | I, bit[7] | F, bit[6] | 0b0101 EL1h */
+	msr	spsr_el3, x0
+	ldr	x0, =el1_start
+	msr	elr_el3, x0
+	eret
+
+el1_start:
+	nop
+#endif /* CONFIG_SWITCH_EL3_TO_EL1 */
+#endif /* CONFIG_ROCKCHIP */
 
 #if defined(CONFIG_GICV2) || defined(CONFIG_GICV3)
 	branch_if_slave x0, 1f
@@ -113,7 +224,23 @@ WEAK(lowlevel_init)
 	ldr	x1, =GICC_BASE
 	bl	gic_init_secure_percpu
 #endif
-#endif
+
+#if defined(CONFIG_ROCKCHIP)
+	/*
+	 * Setting HCR_EL2.TGE AMO IMO FMO for exception rounting to EL2
+	 */
+	mrs	x0, CurrentEL	/* check currentEL */
+	cmp	x0, 0x8
+	b.ne	endseting	/* currentEL != EL2 */
+
+	mrs	x9, hcr_el2
+	orr	x9, x9, #(7 << 3)	/* HCR_EL2.AMO IMO FMO set */
+	orr	x9, x9, #(1 << 27)	/* HCR_EL2.TGE set */
+	msr	hcr_el2, x9
+
+endseting:
+	nop
+#endif /* CONFIG_ROCKCHIP */
 
 	branch_if_master x0, x1, 2f
 
@@ -136,6 +263,8 @@ WEAK(lowlevel_init)
 #ifdef CONFIG_ARMV8_SWITCH_TO_EL1
 	bl	armv8_switch_to_el1
 #endif
+
+#endif /* CONFIG_ARMV8_MULTIENTRY */
 
 2:
 	mov	lr, x29			/* Restore LR */
@@ -168,3 +297,12 @@ ENTRY(c_runtime_cpu_setup)
 
 	ret
 ENDPROC(c_runtime_cpu_setup)
+
+
+#ifdef CONFIG_ROCKCHIP
+	.section .loader_tag, "ax"
+
+.globl gloader_tag
+gloader_tag:
+	.word	0x4B415351
+#endif /* CONFIG_ROCKCHIP */

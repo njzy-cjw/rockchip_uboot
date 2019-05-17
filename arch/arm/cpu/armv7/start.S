@@ -15,7 +15,6 @@
 
 #include <asm-offsets.h>
 #include <config.h>
-#include <version.h>
 #include <asm/system.h>
 #include <linux/linkage.h>
 
@@ -33,6 +32,18 @@
 	.globl	reset
 
 reset:
+/*
+ * check loader tag
+ */
+#ifdef CONFIG_ROCKCHIP
+	ldr	r0, =__loader_tag
+	ldr	r1, [r0]
+	ldr	r0, =LoaderTagCheck
+	ldr	r0, [r0]
+	cmp	r1, r0
+	movne	pc, r14
+#endif
+
 	bl	save_boot_params
 	/*
 	 * disable interrupts (FIQ and IRQ), also set the cpu to SVC32 mode,
@@ -58,7 +69,11 @@ reset:
 	mcr	p15, 0, r0, c1, c0, 0	@ Write CP15 SCTRL Register
 
 	/* Set vector address in CP15 VBAR register */
+#ifdef CONFIG_ROCKCHIP
+	ldr	r0, =_vector
+#else
 	ldr	r0, =_start
+#endif
 	mcr	p15, 0, r0, c12, c0, 0	@Set VBAR
 #endif
 
@@ -85,7 +100,11 @@ ENTRY(c_runtime_cpu_setup)
  * Move vector table
  */
 	/* Set vector address in CP15 VBAR register */
-	ldr     r0, =_start
+#ifdef CONFIG_ROCKCHIP
+	ldr	r0, =_vector
+#else
+	ldr	r0, =_start
+#endif
 	mcr     p15, 0, r0, c12, c0, 0  @Set VBAR
 
 	bx	lr
@@ -124,6 +143,18 @@ ENTRY(cpu_init_cp15)
 	mcr	p15, 0, r0, c7, c5, 6	@ invalidate BP array
 	mcr     p15, 0, r0, c7, c10, 4	@ DSB
 	mcr     p15, 0, r0, c7, c5, 4	@ ISB
+
+	/*
+	 * Invalidate RK3288 L2 Latency, can't be set in normal world
+	 */
+#if defined(CONFIG_RKCHIP_RK3288) && !defined(CONFIG_NORMAL_WORLD)
+	mrc	p15, 1, r0, c9, c0, 2	@ Read L2 Control Register
+	bic	r0, r0, #0x000000FF	@ clear bit 17:0
+	bic	r0, r0, #0x0000FF00	@ clear bit 17:0
+	bic	r0, r0, #0x00030000	@ clear bit 17:0
+	orr	r0, r0, #0x00000008	@ set bit 3
+	mcr	p15, 1, r0, c9, c0, 2	@ config L2 Control Register
+#endif
 
 	/*
 	 * disable MMU stuff and caches
@@ -191,3 +222,12 @@ ENTRY(cpu_init_crit)
 	b	lowlevel_init		@ go setup pll,mux,memory
 ENDPROC(cpu_init_crit)
 #endif
+
+
+#ifdef CONFIG_ROCKCHIP
+	.section .loader_tag, "ax"
+
+.globl gloader_tag
+gloader_tag:
+	.word	0x4B415351
+#endif /* CONFIG_ROCKCHIP */
